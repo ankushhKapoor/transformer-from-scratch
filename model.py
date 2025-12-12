@@ -38,3 +38,28 @@ class PositionalEncoding(nn.Module):
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # Do not record gradient of this positional encoding tensor
         # pe[:, :x.shape[1], :] = Take positional encodings up to the sequence length of x (of all batches) -- think with keeping in mind shape of pe
         return self.dropout(x)
+    
+class LayerNormalization(nn.Module):
+
+    def __init__(self, eps: float = 10**-6):
+        super().__init__()
+        self.eps = eps # Epsilon - used for numerical stability (to avoid division by 0 (in this case if sigma is 0 or near to zero (check formula)))
+        self.alpha = nn.Parameter(torch.ones(1)) # Multiplicative parameter
+        self.bias = nn.Parameter(torch.zeros(1)) # Additive parameter
+
+    def forward(self, x):
+        mean = x.mean(dim=-1, keepdim=True) # Mean along last dimension (d_model) and dont reduce the dimension (keepdim=True)
+        std = x.std(dim=-1, keepdim=True)
+        return self.alpha * (x - mean)/(std + self.eps) + self.bias
+
+class FeedForwardBlock(nn.Module):
+
+    def __init__(self, d_model: int, d_ff: int, dropout: float):
+        super().__init__()
+        self.linear_1 = nn.Linear(d_model, d_ff) # W1 and b1 (b1 is internally defined in nn.Linear)
+        self.dropout = nn.Dropout(dropout)
+        self.linear_2 = nn.Linear(d_ff, d_model) # W2 and b2
+
+    def forward(self, x):
+        # (batch, seq_len, d_model) --> (batch, seq_len, d_ff) --> (batch, seq_len, d_model)
+        return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
