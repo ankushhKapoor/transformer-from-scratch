@@ -126,3 +126,31 @@ class ResidualConnection(nn.Module):
         # Pre-LayerNorm residual connection: x + Dropout(sublayer(LN(x))) [sublayer = prev layer eg. attention/FFN]
         # Note: The ppr uses Post-LN: LN(x + Dropout(sublayer(x))), but Pre-LN is more stable and widely used in modern Transformers.
         return x + self.dropout(sublayer(self.norm(x)))
+    
+class EncoderBlock(nn.Module):
+    def __init__(self, self_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float):
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.residual_connections = nn.ModuleList([ResidualConnection(dropout) for _ in range(2)])
+
+    def forward(self, x, src_mask):
+        # src_mask is used to mask padding tokens in the input so they do not interact with real tokens (padding is used to make sequences fixed-length)
+
+        # Self-attention requires multiple inputs (q, k, v, mask); lambda adapts it to the single-input sublayer interface expected by the residual connection
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
+        x = self.residual_connections[1](x, self.feed_forward_block)
+        # The input is first passed through multi-head self-attention and then through the feed-forward network (check encoder diagram for more understanding)
+        return x
+    
+class Encoder(nn.Module):
+    def __init__(self, layers: nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+
+    def forward(self, x, mask):
+        # Sequentially apply encoder layers, passing each layer's output to the next
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
