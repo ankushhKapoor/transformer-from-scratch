@@ -59,7 +59,7 @@ class FeedForwardBlock(nn.Module):
     def forward(self, x):
         # (batch, seq_len, d_model) --> (batch, seq_len, d_ff) --> (batch, seq_len, d_model)
         return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
-    
+
 class MultiHeadAttentionBlock(nn.Module):
     def __init__(self, d_model: int, h: int , dropout: float):
         super().__init__()
@@ -136,7 +136,6 @@ class EncoderBlock(nn.Module):
 
     def forward(self, x, src_mask):
         # src_mask is used to mask padding tokens in the input so they do not interact with real tokens (padding is used to make sequences fixed-length)
-
         # Self-attention requires multiple inputs (q, k, v, mask); lambda adapts it to the single-input sublayer interface expected by the residual connection
         x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
         x = self.residual_connections[1](x, self.feed_forward_block)
@@ -152,5 +151,39 @@ class Encoder(nn.Module):
     def forward(self, x, mask):
         # Sequentially apply encoder layers, passing each layer's output to the next
         for layer in self.layers:
-            x = layer(x, mask)
+            x = layer(x, mask) # Calls the forward method of EncoderBlock (do not get confused by the similar arguments to Encoder.forward)
         return self.norm(x)
+
+class DecoderBlock(nn.Module):
+    def __init__(self, self_attention_block: MultiHeadAttentionBlock, cross_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float):
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.cross_attention_block = cross_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.residual_connections = nn.ModuleList([ResidualConnection(dropout) for _ in range(3)])
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask)) # Use tgt_mask for decoder self-attention to block padding tokens and future tokens
+        x = self.residual_connections[1](x, lambda x: self.cross_attention_block(x, encoder_output, encoder_output, src_mask)) # Cross-attention attends to encoder outputs, so src_mask is applied (not tgt_mask)
+        x = self.residual_connections[2](x, self.feed_forward_block)
+
+class Decoder(nn.Module):
+    def __init__(self, layers: nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, encoder_output, src_mask, tgt_mask) # Calls the forward method of DecoderBlock
+        return self.norm(x)
+    
+class ProjectionLayer(nn.Module):
+# Project from d_model to vocab_size and apply log-softmax for numerical stability (log-softmax is used instead of softmax which is used in ppr)
+    def __init__(self, d_model: int, vocab_size: int):
+        super().__init__()
+        self.proj = nn.Linear(d_model, vocab_size)
+    
+    def forward(self, x):
+        # (batch, seq_len, d_model) -> (batch, seq_len, vocab_size)
+        return torch.log_softmax(self.proj(x), dim = -1)
