@@ -8,5 +8,7 @@ dependencies = [
     "datasets>=4.4.1",
     "tensorboard>=2.20.0",
     "tokenizers>=0.22.1",
+    "torch>=2.5",
+    "torchmetrics>=1.8.2",
     "tqdm>=4.67.1",
 ]

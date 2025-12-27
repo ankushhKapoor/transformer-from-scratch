@@ -32,7 +32,7 @@ class BilingualDataset(Dataset):
         enc_input_tokens = self.tokenizer_src.encode(src_text).ids
         dec_input_tokens = self.tokenizer_tgt.encode(tgt_text).ids
 
-        # # Truncate long sequences
+        # Truncate long sequences
         enc_input_tokens = enc_input_tokens[: self.seq_len - 2]
         dec_input_tokens = dec_input_tokens[: self.seq_len - 1]
 
