@@ -22,7 +22,7 @@ def get_all_sentences(ds, lang):
         yield item['translation'][lang]
 
 def get_or_build_tokenizer(config, ds, lang):
-    tokenizer_path = Path(config('tokenizer_file').format(lang))
+    tokenizer_path = Path(config['tokenizer_file'].format(lang))
     if not Path.exists(tokenizer_path):
         tokenizer = Tokenizer(WordLevel(unk_token='[UNK]')) # Replace unkown token with [UNK]
         tokenizer.pre_tokenizer = Whitespace()
@@ -77,11 +77,11 @@ def train_model(config):
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
 
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
-    model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size().to(device))
+    model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
     # Tensorboard - visualization and monitoring tool
     writer = SummaryWriter(config['experiment_name'])
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=config(['lr']), eps=1e-9)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
 
     initial_epoch = 0
     global_step = 0
