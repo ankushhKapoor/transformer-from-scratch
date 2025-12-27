@@ -66,6 +66,7 @@ class MultiHeadAttentionBlock(nn.Module):
         self.d_model = d_model
         self.h = h
         assert d_model % h == 0, "d_model is not divisible by h"
+        assert d_model % h == 0, "d_model is not divisible by h"
 
         self.d_k = d_model // h # Dimension of each vector as seen by head
         self.w_q = nn.Linear(d_model, d_model) # Wq

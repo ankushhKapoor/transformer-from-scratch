@@ -13,3 +13,4 @@ wheels/
 *.json
 runs/
 weights/
+*.pt
