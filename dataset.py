@@ -23,18 +23,15 @@ class BilingualDataset(Dataset):
 
     def __getitem__(self, index):
         src_target_pair = self.ds[index]
-        src_text = src_target_pair["src"]
-        tgt_text = src_target_pair["tgt"]
-        # Below version works for opus only
-        # src_text = src_target_pair['translation'][self.src_lang]
-        # tgt_text = src_target_pair['translation'][self.tgt_lang]
+        src_text = src_target_pair['translation'][self.src_lang]
+        tgt_text = src_target_pair['translation'][self.tgt_lang]
 
         enc_input_tokens = self.tokenizer_src.encode(src_text).ids
         dec_input_tokens = self.tokenizer_tgt.encode(tgt_text).ids
 
         # Truncate long sequences
-        enc_input_tokens = enc_input_tokens[: self.seq_len - 2]
-        dec_input_tokens = dec_input_tokens[: self.seq_len - 1]
+        # enc_input_tokens = enc_input_tokens[: self.seq_len - 2]
+        # dec_input_tokens = dec_input_tokens[: self.seq_len - 1]
 
         enc_num_padding_tokens = self.seq_len - len(enc_input_tokens) - 2 # Subtract 2 for [SOS] and [EOS] tokens
         dec_num_padding_tokens = self.seq_len - len(dec_input_tokens) - 1 # We only add [SOS] for training on decoder side, therefore only 1
