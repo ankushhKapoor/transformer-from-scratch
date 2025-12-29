@@ -185,8 +185,8 @@ def train_model(config):
 
     for epoch in range(initial_epoch, config['num_epochs']):
         batch_iterator = tqdm(train_dataloader, desc=f'Processing epoch {epoch: 02d}')
+        model.train()
         for batch in batch_iterator:
-            model.train()
 
             encoder_input = batch['encoder_input'].to(device) # (batch, seq_len)
             decoder_input = batch['decoder_input'].to(device) # (batch, seq_len)
@@ -219,7 +219,7 @@ def train_model(config):
         run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
 
         # Save the model at the end of every epoch
-        model_filename = get_weights_file_path(config, f'{epoch: 02d}')
+        model_filename = get_weights_file_path(config, f'{epoch}')
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
