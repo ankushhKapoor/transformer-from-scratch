@@ -1,14 +1,9 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.tensorboard import SummaryWriter
 import torchmetrics
-
-from tqdm import tqdm
-
-from dataset import BilingualDataset, causal_mask
-from model import build_transformer
-from config import get_config, get_weights_file_path
 
 from datasets import load_dataset
 from tokenizers import Tokenizer
@@ -16,8 +11,14 @@ from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
 
-from pathlib import Path
+from tqdm import tqdm
 from sacrebleu import corpus_bleu
+from pathlib import Path
+import warnings
+
+from model import build_transformer
+from dataset import BilingualDataset, causal_mask
+from config import get_config, get_weights_file_path
 
 def beam_search_decode(model, beam_size, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device, alpha=0.6):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
@@ -107,7 +108,7 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
 
     return decoder_input.squeeze(0)
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, writer, num_examples=10):
+def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step=0, writer=None, num_examples=10):
     model.eval()
     count = 0
 
@@ -147,22 +148,25 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
                 print_msg('-'*console_width)
                 break
 
-    # Evaluate the character error rate
-    metric = torchmetrics.CharErrorRate()
-    cer = metric(predicted, expected)
-    writer.add_scalar('validation cer', cer, global_step)
-    writer.flush()
+    bleu = 0.0
 
-    # Compute the word error rate
-    metric = torchmetrics.WordErrorRate()
-    wer = metric(predicted, expected)
-    writer.add_scalar('validation wer', wer, global_step)
-    writer.flush()
+    if writer:
+        # Evaluate the character error rate
+        metric = torchmetrics.CharErrorRate()
+        cer = metric(predicted, expected)
+        writer.add_scalar('validation cer', cer, global_step)
+        writer.flush()
 
-    # Compute the BLEU metric
-    bleu = corpus_bleu(predicted, [expected]).score
-    writer.add_scalar('validation BLEU', bleu, global_step)
-    writer.flush()
+        # Compute the word error rate
+        metric = torchmetrics.WordErrorRate()
+        wer = metric(predicted, expected)
+        writer.add_scalar('validation wer', wer, global_step)
+        writer.flush()
+
+        # Compute the BLEU metric
+        bleu = corpus_bleu(predicted, [expected]).score
+        writer.add_scalar('validation BLEU', bleu, global_step)
+        writer.flush()
 
     return bleu
     
@@ -218,6 +222,16 @@ def get_model(config, vocab_src_len, vocab_tgt_len):
     model = build_transformer(vocab_src_len, vocab_tgt_len, config['seq_len'], config['seq_len'], config['d_model'])
     return model
 
+def get_lr_scheduler(optimizer, d_model, warmup_steps=4000):
+    def lr_lambda(step):
+        step = max(step, 1)
+        return (d_model ** -0.5) * min(
+            step ** -0.5,
+            step * warmup_steps ** -1.5
+        )
+
+    return LambdaLR(optimizer, lr_lambda)
+
 def train_model(config):
     # Define the device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -231,6 +245,7 @@ def train_model(config):
     writer = SummaryWriter(config['experiment_name'])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
+    scheduler = get_lr_scheduler(optimizer, d_model=config['d_model'])
 
     initial_epoch = 0
     global_step = 0
@@ -241,6 +256,7 @@ def train_model(config):
         state = torch.load(model_filename)
         initial_epoch = state['epoch'] + 1
         optimizer.load_state_dict(state['optimizer_state_dict'])
+        scheduler.load_state_dict(state['scheduler_state_dict'])
         global_step = state['global_step']
         bleu = state['bleu']
         best_bleu = state.get('best_bleu') 
@@ -277,6 +293,7 @@ def train_model(config):
 
             # Update the weights
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
 
             global_step += 1
@@ -290,6 +307,7 @@ def train_model(config):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'global_step': global_step,
                 'bleu': bleu,
                 'best_bleu': best_bleu
@@ -313,5 +331,6 @@ def train_model(config):
             torch.save(save_contents, model_filename)
 
 if __name__ == "__main__":
+    warnings.filterwarnings("ignore")
     config = get_config()
     train_model(config)
