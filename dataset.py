@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 from torch.utils.data import Dataset
 
 class BilingualDataset(Dataset):
@@ -26,16 +25,18 @@ class BilingualDataset(Dataset):
         src_text = src_target_pair['translation'][self.src_lang]
         tgt_text = src_target_pair['translation'][self.tgt_lang]
 
+        # Transform the text into tokens
         enc_input_tokens = self.tokenizer_src.encode(src_text).ids
         dec_input_tokens = self.tokenizer_tgt.encode(tgt_text).ids
 
-        # Truncate long sequences
+        # Truncate long sequences (uncomment if you want to truncate long sentences and need less seq_len for easy computation)
         # enc_input_tokens = enc_input_tokens[: self.seq_len - 2]
         # dec_input_tokens = dec_input_tokens[: self.seq_len - 1]
 
         enc_num_padding_tokens = self.seq_len - len(enc_input_tokens) - 2 # Subtract 2 for [SOS] and [EOS] tokens
         dec_num_padding_tokens = self.seq_len - len(dec_input_tokens) - 1 # We only add [SOS] for training on decoder side, therefore only 1
 
+        # Make sure the number of padding tokens is not negative. If it is, the sentence is too long
         if enc_num_padding_tokens < 0 or dec_num_padding_tokens < 0:
             raise ValueError('Sentence is too long')
 
@@ -67,6 +68,7 @@ class BilingualDataset(Dataset):
             ]
         )
 
+        # Double check the size of the tensors to make sure they are all seq_len long
         assert encoder_input.size(0) == self.seq_len
         assert decoder_input.size(0) == self.seq_len
         assert label.size(0) == self.seq_len

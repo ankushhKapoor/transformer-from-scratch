@@ -7,6 +7,7 @@ def get_config():
         "lr": 1.0,
         "seq_len": 350,
         "d_model": 512,
+        "datasource": 'Helsinki-NLP/opus_books',
         "lang_src": "en",
         "lang_tgt": "it",
         "model_folder": "weights",

@@ -10,7 +10,9 @@ class InputEmbeddings(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)
 
     def forward(self, x):
-        return self.embedding(x) * math.sqrt(self.d_model) # Check last line (just before table) of 3.4 (Embeddings and Softmax)
+         # Multiply by sqrt(d_model) to scale the embeddings according to the paper
+         # Check last line (just before table) of 3.4 (Embeddings and Softmax)
+        return self.embedding(x) * math.sqrt(self.d_model)
     
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, seq_len: int, dropout: float):
@@ -21,16 +23,18 @@ class PositionalEncoding(nn.Module):
 
         # Create a matrix of shape (seq_len, d_model)
         pe = torch.zeros(seq_len, d_model)
-        # Create a vector of shape (seq_len, 1) -- for 1 sentence
+        # Create a vector of shape (seq_len)
         position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
+        # Create a vector of shape (d_model)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000) / d_model)) # Same expression as given in paper but more optimised version
         # Apply the sin to even positions
         pe[:, 0::2] = torch.sin(position * div_term)
+        # Apply the cos to odd positions
         pe[:, 1::2] = torch.cos(position * div_term)
-
+        # Add a batch dimension to the positional encoding
         pe = pe.unsqueeze(0) # Shape = (1, seq_len, d_model) -- for batch of sentences
-
-        self.register_buffer("pe", pe) # To save this tensor along with module and saying that this is not a parameter
+        # Register the positional encoding as a buffer (save this tensor along with module and tell that this is not a parameter)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
         x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # Do not record gradient of this positional encoding tensor
@@ -41,12 +45,17 @@ class LayerNormalization(nn.Module):
     def __init__(self, eps: float = 10**-6):
         super().__init__()
         self.eps = eps # Epsilon - used for numerical stability (to avoid division by 0 (in this case if sigma is 0 or near to zero (check formula)))
-        self.alpha = nn.Parameter(torch.ones(1)) # Multiplicative parameter
-        self.bias = nn.Parameter(torch.zeros(1)) # Additive parameter
+        self.alpha = nn.Parameter(torch.ones(1)) # alpha is a learnable parameter (multiplicative) parameter
+        self.bias = nn.Parameter(torch.zeros(1)) # bias is a learnable (additive) parameter
 
     def forward(self, x):
-        mean = x.mean(dim=-1, keepdim=True) # Mean along last dimension (d_model) and dont reduce the dimension (keepdim=True)
+        # x: (batch, seq_len, hidden_size)
+
+        # Mean along last dimension (d_model) keep the dimension for broadcasting
+        mean = x.mean(dim=-1, keepdim=True)
+        # Standard Deviation along last dimension (d_model) keep the dimension for broadcasting
         std = x.std(dim=-1, keepdim=True)
+        # eps is to prevent dividing by zero or when std is very small
         return self.alpha * (x - mean)/(std + self.eps) + self.bias
 
 class FeedForwardBlock(nn.Module):
@@ -65,7 +74,7 @@ class MultiHeadAttentionBlock(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.h = h
-        assert d_model % h == 0, "d_model is not divisible by h"
+        # Make sure d_model is divisible by h
         assert d_model % h == 0, "d_model is not divisible by h"
 
         self.d_k = d_model // h # Dimension of each vector as seen by head
@@ -81,11 +90,13 @@ class MultiHeadAttentionBlock(nn.Module):
     def attention(query, key, value, mask, dropout: nn.Dropout):
         d_k = query.shape[-1]
 
+        # Just apply the formula from the paper
         # (batch, h, seq_len, d_k) --> (batch, h, seq_len, seq_len)
         # For understanding ignore (batch, h) and think like (seq_len, d_k) @ (d_k, seq_len)
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
-            attention_scores.masked_fill_(mask == 0, -1e9) # Mask the elements having mask value = 0 with the value -10^9 (-∞)
+            # Write a very low value (indicating -inf) to the positions where mask == 0
+            attention_scores.masked_fill_(mask == 0, -1e9)
         # softmax(xᵢ) = exp(xᵢ) / Σⱼ exp(xⱼ)
         attention_scores = attention_scores.softmax(dim = -1) # (batch, h, seq_len, seq_len)
         if dropout is not None:
@@ -96,7 +107,7 @@ class MultiHeadAttentionBlock(nn.Module):
 
     def forward(self, q, k, v, mask):
         # Multiply by respective weight matrices
-        # (batch, seq_len, d_model) --> (batch, seq_len, d_model)
+        # (batch, seq_len, d_model) --> (batch, seq_len, d_model) for all query, key, value
         query = self.w_q(q) # multiply by w_q i.e. q'(or query) = (w_q)^T @ q
         key = self.w_k(k)
         value = self.w_v(v)
@@ -106,6 +117,7 @@ class MultiHeadAttentionBlock(nn.Module):
         key = key.view(key.shape[0], key.shape[1], self.h, self.d_k).transpose(1, 2)
         value = value.view(value.shape[0], value.shape[1], self.h, self.d_k).transpose(1, 2)
 
+        # Calculate attention
         x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key, value, mask, self.dropout)
 
         # Combine all heads together
@@ -202,16 +214,19 @@ class Transformer(nn.Module):
         self.projection_layer = projection_layer
 
     def encode(self, src, src_mask):
+        # (batch, seq_len, d_model)
         src = self.src_embed(src)
         src = self.src_pos(src)
         return self.encoder(src, src_mask)
 
     def decode(self, encoder_output, src_mask, tgt, tgt_mask):
+        # (batch, seq_len, d_model)
         tgt = self.tgt_embed(tgt)
         tgt = self.tgt_pos(tgt)
         return self.decoder(tgt, encoder_output, src_mask, tgt_mask)
     
     def project(self, x):
+        # (batch, seq_len, vocab_size)
         return self.projection_layer(x)
     
 def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int, tgt_seq_len: int, d_model: int = 512, N: int = 6, h: int = 8, dropout: float = 0.1, d_ff: int = 2048) -> Transformer:

@@ -108,67 +108,115 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
 
     return decoder_input.squeeze(0)
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step=0, writer=None, num_examples=10):
+def run_validation(
+    model,
+    validation_ds,
+    tokenizer_src,
+    tokenizer_tgt,
+    max_len,
+    device,
+    print_msg,
+    global_step=0,
+    writer=None,
+    num_examples=10
+):
     model.eval()
     count = 0
 
     expected = []
     predicted = []
 
+    # Accuracy counters
+    total_tokens = 0
+    correct_tokens = 0
+
     console_width = 80
 
     with torch.no_grad():
         for batch in validation_ds:
             count += 1
-            encoder_input = batch["encoder_input"].to(device) # (b, seq_len)
-            encoder_mask = batch["encoder_mask"].to(device) # (b, 1, 1, seq_len)
+            encoder_input = batch["encoder_input"].to(device)
+            encoder_mask = batch["encoder_mask"].to(device)
 
-            # check that the batch size is 1
             assert encoder_input.size(0) == 1, "Batch size must be 1 for validation"
 
-            model_out_greedy = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
-            model_out_beam = beam_search_decode(model, 3, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+            model_out_greedy = greedy_decode(
+                model, encoder_input, encoder_mask,
+                tokenizer_src, tokenizer_tgt, max_len, device
+            )
+            model_out_beam = beam_search_decode(
+                model, 4, encoder_input, encoder_mask,
+                tokenizer_src, tokenizer_tgt, max_len, device
+            )
 
             source_text = batch["src_text"][0]
             target_text = batch["tgt_text"][0]
-            model_out_text_beam = tokenizer_tgt.decode(model_out_beam.detach().cpu().numpy())
-            model_out_text_greedy = tokenizer_tgt.decode(model_out_greedy.detach().cpu().numpy())
-            
-            expected.append(target_text)
-            predicted.append(model_out_text_beam) # Use greedy only for BLEU
 
-            # Print the source, target and model output
-            print_msg('-'*console_width)
-            print_msg(f"{f'SOURCE: ':>20}{source_text}")
-            print_msg(f"{f'TARGET: ':>20}{target_text}")
-            print_msg(f"{f'PREDICTED GREEDY: ':>20}{model_out_text_greedy}")
-            print_msg(f"{f'PREDICTED BEAM: ':>20}{model_out_text_beam}")
+            pred_text = tokenizer_tgt.decode(
+                model_out_beam.detach().cpu().numpy()
+            )
+
+            greedy_text = tokenizer_tgt.decode(
+                model_out_greedy.detach().cpu().numpy()
+            )
+
+            expected.append(target_text)
+            predicted.append(pred_text)
+
+            # ---- TOKEN-LEVEL ACCURACY ----
+            target_tokens = target_text.split()
+            pred_tokens = pred_text.split()
+
+            min_len = min(len(target_tokens), len(pred_tokens))
+            for i in range(min_len):
+                if target_tokens[i] == pred_tokens[i]:
+                    correct_tokens += 1
+                total_tokens += 1
+
+            # Count remaining unmatched tokens as incorrect
+            total_tokens += abs(len(target_tokens) - len(pred_tokens))
+
+            # Print samples
+            print_msg('-' * console_width)
+            print_msg(f"{'SOURCE: ':>20}{source_text}")
+            print_msg(f"{'TARGET: ':>20}{target_text}")
+            print_msg(f"{'PREDICTED GREEDY: ':>20}{greedy_text}")
+            print_msg(f"{'PREDICTED BEAM: ':>20}{pred_text}")
 
             if count == num_examples:
-                print_msg('-'*console_width)
+                print_msg('-' * console_width)
                 break
+
+    # Compute accuracy (%)
+    accuracy = 0.0
+    if total_tokens > 0:
+        accuracy = (correct_tokens / total_tokens) * 100.0
+        print_msg(f"{'ACCURACY: '}{accuracy}%")
 
     bleu = 0.0
 
     if writer:
-        # Evaluate the character error rate
-        metric = torchmetrics.CharErrorRate()
-        cer = metric(predicted, expected)
-        writer.add_scalar('validation cer', cer, global_step)
-        writer.flush()
+        # Character Error Rate
+        cer_metric = torchmetrics.CharErrorRate()
+        cer = cer_metric(predicted, expected)
+        writer.add_scalar("validation cer", cer, global_step)
 
-        # Compute the word error rate
-        metric = torchmetrics.WordErrorRate()
-        wer = metric(predicted, expected)
-        writer.add_scalar('validation wer', wer, global_step)
-        writer.flush()
+        # Word Error Rate
+        wer_metric = torchmetrics.WordErrorRate()
+        wer = wer_metric(predicted, expected)
+        writer.add_scalar("validation wer", wer, global_step)
 
-        # Compute the BLEU metric
+        # BLEU (SacreBLEU)
         bleu = corpus_bleu(predicted, [expected]).score
-        writer.add_scalar('validation BLEU', bleu, global_step)
+        writer.add_scalar("validation BLEU", bleu, global_step)
+
+        # Token-level Accuracy
+        writer.add_scalar("validation accuracy (%)", accuracy, global_step)
+
         writer.flush()
 
-    return bleu
+    return bleu, accuracy
+
     
 def get_all_sentences(ds, lang):
     for item in ds:
@@ -187,13 +235,15 @@ def get_or_build_tokenizer(config, ds, lang):
     return tokenizer
 
 def get_ds(config):
-    ds_raw = load_dataset('Helsinki-NLP/opus_books', f'{config["lang_src"]}-{config["lang_tgt"]}', split='train')
+    # It only has the train split, so we divide it overselves
+    ds_raw = load_dataset(f"{config['datasource']}", f"{config['lang_src']}-{config['lang_tgt']}", split='train')
 
     # Build tokenizers
     tokenizer_src = get_or_build_tokenizer(config, ds_raw, config['lang_src'])
     tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config['lang_tgt'])
 
-    # Keep 90% for training and 10% for validation
+    # Create a fixed 90/10 split for training vs unseen validation data.
+    # This ensures we measure true generalization rather than memorization.
     train_ds_size = int(0.9 * len(ds_raw))
     val_ds_size = len(ds_raw) - train_ds_size
     train_ds_raw, val_ds_raw = random_split(ds_raw, [train_ds_size, val_ds_size])
@@ -201,6 +251,7 @@ def get_ds(config):
     train_ds = BilingualDataset(train_ds_raw, tokenizer_src, tokenizer_tgt, config['lang_src'], config['lang_tgt'], config['seq_len'])
     val_ds = BilingualDataset(val_ds_raw, tokenizer_src, tokenizer_tgt, config['lang_src'], config['lang_tgt'], config['seq_len'])
 
+    # Find the maximum length of each sentence in the source and target sentence
     max_len_src = 0
     max_len_tgt = 0
 
@@ -224,12 +275,19 @@ def get_model(config, vocab_src_len, vocab_tgt_len):
 
 def get_lr_scheduler(optimizer, d_model, warmup_steps=4000):
     def lr_lambda(step):
+        # Avoid division by zero at step 0
         step = max(step, 1)
+
+        # This formula (mentioned in ppr) calculates the scaling factor based on d_model and current step:
+        # 1. (d_model ** -0.5) scales the LR relative to the model dimension.
+        # 2. min(...) chooses between the linear warmup and the square root decay.
+        #    - Linear warmup: step * (warmup_steps ** -1.5)
+        #    - Inverse square root decay: step ** -0.5
         return (d_model ** -0.5) * min(
             step ** -0.5,
             step * warmup_steps ** -1.5
         )
-
+    # LambdaLR applies the calculated factor to the lr defined in the optimizer
     return LambdaLR(optimizer, lr_lambda)
 
 def train_model(config):
@@ -237,6 +295,7 @@ def train_model(config):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device {device}')
 
+    # Make sure the weights folder exists
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
 
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
@@ -250,6 +309,7 @@ def train_model(config):
     initial_epoch = 0
     global_step = 0
     best_bleu = float("-inf")
+    # If the user specified a model to preload before training, load it
     if config['preload']:
         model_filename = get_weights_file_path(config, config['preload'])
         print(f'Preloading model {model_filename}')
@@ -260,9 +320,9 @@ def train_model(config):
         global_step = state['global_step']
         bleu = state['bleu']
         best_bleu = state.get('best_bleu') 
-        print(f"Resuming search. Historical best BLEU to beat: {best_bleu}")
 
-    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1) # Apply label smoothing to avoid overconfident predictions by assigning a small probability to other classes and imporove generalization
+    # Simple Cross Entropy Loss fn
+    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1) # Apply label smoothing to avoid overconfident predictions by assigning a small probability to other classes (non top classes) and imporove generalization
 
     for epoch in range(initial_epoch, config['num_epochs']):
         batch_iterator = tqdm(train_dataloader, desc=f'Processing epoch {epoch: 02d}')
@@ -274,13 +334,14 @@ def train_model(config):
             encoder_mask = batch['encoder_mask'].to(device) # (batch, 1, 1, seq_len) -- only mask [PAD]
             decoder_mask = batch['decoder_mask'].to(device) # (batch, 1, seq_len, seq_len) -- also mask subsequent mask
 
-            # Run the tensors through the transformers
+            # Run the tensors through the transformer (encoder, decoder and the projection layer)
             encoder_output = model.encode(encoder_input, encoder_mask) # (batch, seq_len, d_model)
             decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (batch, seq_len, d_model)
             proj_output = model.project(decoder_output) # (batch, seq_len, tgt_vocab_size)
 
             label = batch['label'].to(device) # (batch, seq_len)
 
+            # Compute the loss using a simple cross entropy
             # (batch, seq_len, tgt_vocab_size) --> (batch * seq_len, tgt_vocab_size)
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})
@@ -313,19 +374,19 @@ def train_model(config):
                 'best_bleu': best_bleu
             }
 
-        # Save the model at save_every
+        # Save the model at the end of save_every epoch number
         if config["save_every"] is not None:
             if (epoch+1) % config["save_every"] == 0:
                 model_filename = get_weights_file_path(config, f'{epoch}')
                 torch.save(save_contents, model_filename)
 
-        # Save the model at best bleu
+        # Save the model at the end of best bleu
         if config["save_best_only"]:
             if bleu == best_bleu:
                 best_model_path = Path(config["model_folder"]) / f"{config['model_basename']}best.pt"
                 torch.save(save_contents, best_model_path)
 
-        # Save the model at every epoch
+        # Save the model at the end of every epoch
         if not config["save_best_only"] and config["save_every"] is None:
             model_filename = get_weights_file_path(config, f'{epoch}')
             torch.save(save_contents, model_filename)
